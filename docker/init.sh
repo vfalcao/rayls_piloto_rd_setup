@@ -4,6 +4,16 @@ CHAINID="$CHAINID"
 MONGODB_CONNECTION_STRING="$MONGODB_CONNECTION_STRING"
 COMMIT_CHAIN_RPC_URL="$COMMIT_CHAIN_RPC_URL"
 COMMIT_CHAIN_WS_URL="$COMMIT_CHAIN_WS_URL"
+USER_AND_GID_INFO="$USER_AND_GID_INFO"
+
+show_current_environment_variables() {
+  declare -p \
+     CHAINID \
+     MONGODB_CONNECTION_STRING \
+     COMMIT_CHAIN_RPC_URL \
+     COMMIT_CHAIN_WS_URL \
+     USER_AND_GID_INFO
+}
 
 check_environment_variables(){
   # Check if CHAIN_ID is defined
@@ -31,9 +41,24 @@ check_environment_variables(){
   fi
 }
 
+create_dirs(){
+mkdir -pv ./rayls/privacy-ledger/data/rayls-private-ledger
+mkdir -pv ./rayls/privacy-ledger/var
+mkdir -pv ./rayls/relayer/var
+#mkdir -p ./rayls
+#mkdir -p ./rayls/privacy-ledger/data ./rayls/privacy-ledger/var ./rayls/relayer/var
+}
+
 setup_config(){
-mkdir -p ./rayls
-mkdir -p ./rayls/privacy-ledger/data ./rayls/privacy-ledger/var ./rayls/relayer/var
+  create_dirs
+  setup_privacy_ledger_genesis_json
+  setup_privacy_ledger_config_toml
+  setup_privacy_ledger_start_sh
+  setup_relayer_config_json
+}
+
+# generate privacy-ledger...genesis.json
+setup_privacy_ledger_genesis_json() {
 cat <<EOF > ./rayls/privacy-ledger/var/genesis.json
 {
   "config": {
@@ -58,7 +83,10 @@ cat <<EOF > ./rayls/privacy-ledger/var/genesis.json
   }
 }
 EOF
+}
 
+# generate privacy-ledger...config.toml
+setup_privacy_ledger_config_toml() {
 cat <<EOF > ./rayls/privacy-ledger/var/config.toml
 [Eth]
 RPCGasCap = 9000000000000
@@ -77,7 +105,10 @@ DatasetsLockMmap = false
 PowMode = 0
 NotifyFull = false
 EOF
+}
 
+# generate privacy-ledger...start.sh
+setup_privacy_ledger_start_sh() {
 cat <<EOF > ./rayls/privacy-ledger/var/start.sh
 #!/bin/sh
 
@@ -115,9 +146,11 @@ cat <<EOF > ./rayls/privacy-ledger/var/start.sh
   --db.engine.name="\${MONGODB_DATABASE}"\
   /app/var/genesis.json
 EOF
-
 chmod +x ./rayls/privacy-ledger/var/start.sh
+}
 
+setup_relayer_config_json() {
+  # generate relayer...config.json
 cat <<EOF > ./rayls/relayer/var/config.json
 {
   "Database": {
@@ -150,20 +183,45 @@ cat <<EOF > ./rayls/relayer/var/config.json
   }
 }
 EOF
+  #informative_output
+}
+
+setup_docker_compose() {
+  if [ -z "$USER_AND_GID_INFO" ]; then
+    USER_AND_GID_INFO=$(id | tr ')(=,' ' '  | awk '{ print $2":"$5 }')
+  fi
+  1>&2 echo "using $USER_AND_GID_INFO for USER:GID setting for mongo docker"
 
   if [ -z "$MONGODB_CONNECTION_STRING" ]; then
     cp ./examples/docker-compose.yml.mongodb docker-compose.yml
     sed -i "s|BLOCKCHAIN_CHAIN_ID|$CHAINID|g" docker-compose.yml
     sed -i "s|COMMIT_CHAIN_RPC_URL|$COMMIT_CHAIN_RPC_URL|g" docker-compose.yml
-    sed -i "s|COMMIT_CHAIN_WS_URL|$COMMIT_CHAIN_WS_URL|g" docker-compose.yml     
-    informative_output
+    sed -i "s|COMMIT_CHAIN_WS_URL|$COMMIT_CHAIN_WS_URL|g" docker-compose.yml
+    mkdir -pv mongodb/data
   else
     cp ./examples/docker-compose.yml.example docker-compose.yml
     sed -i "s|BLOCKCHAIN_CHAIN_ID|$CHAINID|g" docker-compose.yml
     sed -i "s|MONGODB_CONNECTION_STRING|$MONGODB_CONNECTION_STRING|g" docker-compose.yml
     sed -i "s|COMMIT_CHAIN_RPC_URL|$COMMIT_CHAIN_RPC_URL|g" docker-compose.yml
     sed -i "s|COMMIT_CHAIN_WS_URL|$COMMIT_CHAIN_WS_URL|g" docker-compose.yml
-    informative_output   
+  fi
+
+  if [ -n "$USER_AND_GID_INFO" ]; then
+    sed -i "s|USER:GID|$USER_AND_GID_INFO|g" docker-compose.yml
+  else
+    sed -i '/user:/d ; /USER:GID/d' examples/docker-compose.yml.mongodb
+  fi
+  1>&2 echo "docker-compose.yml file (re)generated"
+}
+
+
+setup_dirs_user_and_gid() {
+  if [ -z "$USER_AND_GID_INFO" ]; then
+    USER_AND_GID_INFO=$(id | tr ')(=,' ' '  | awk '{ print $2":"$5 }')
+  fi
+  1>&2 echo "using $USER_AND_GID_INFO for USER:GID for dirs"
+  if [ -n "$USER_AND_GID_INFO" ]; then
+    chown -Rc $USER_AND_GID_INFO .
   fi
 }
 
@@ -185,25 +243,32 @@ informative_output(){
   echo "./rayls/privacy-ledger/var/genesis.json"
   echo "./rayls/privacy-ledger/var/start.sh"
   echo ""
-  
-  echo "Starting Rayls Environment!"
+
 }
 
 starting_environment(){
+  echo "Starting Rayls Environment!"
   if [ -z "$MONGODB_CONNECTION_STRING" ]; then
     docker compose up -d mongodb && sleep 40
-	  docker compose up -d privacy-ledger && sleep 15
-	  docker compose up -d relayer
-	  docker compose logs privacy-ledger relayer -f
+    docker compose up -d privacy-ledger && sleep 15
+    docker compose up -d relayer
+    docker compose logs privacy-ledger relayer -f
   else
-	  docker compose up -d privacy-ledger && sleep 15
-	  docker compose up -d relayer
-	  docker compose logs privacy-ledger relayer -f
+    docker compose up -d privacy-ledger && sleep 15
+    docker compose up -d relayer
+    docker compose logs privacy-ledger relayer -f
   fi
-
 }
 
-check_environment_variables
-setup_config
-informative_output
-starting_environment
+
+if [ -z "$1" ]; then
+  ${NOOP+echo} check_environment_variables
+  ${NOOP+echo} create_dirs
+  ${NOOP+echo} setup_config
+  ${NOOP+echo} setup_docker_compose
+  ${NOOP+echo} setup_dirs_user_and_gid
+   ${NOOP+echo} informative_output
+  ${NOOP+echo} starting_environment
+else
+  ${NOOP+echo} $*
+fi
